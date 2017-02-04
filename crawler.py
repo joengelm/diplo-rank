@@ -89,6 +89,31 @@ class Crawler:
                 logging.error("Failed to save: {0}".format(track.title))
             self.user_data_queue.task_done()
 
+    def scraper(self):
+        try:
+
+            user_id = self.user_id_queue.get()
+            path = '/users/' + str(user_id)
+
+            user = client.get(path)
+            followings = client.get(path + '/followings').collection
+            likes = client.get(path + '/favorites')
+            comments = client.get(path + '/comments')
+            reposts = client.get('/e1' + path + '/track_reposts')
+            #play_count = get_play_count(user_id)
+            obj = {
+                'user': user,
+                'followings': followings,
+                'likes': likes,
+                'comments': comments,
+                'reposts': reposts 
+            }
+            
+            self.user_data_queue.put(obj)
+
+        except:
+            print('Error')
+
     def crawl(self):
         scraper_threads = []
         for i in range(20):
