@@ -12,9 +12,11 @@ from urllib.request import urlopen
 TODO:
     - Signal handling for a cleaner way to stop crawling
     - Pick up crawling from a previous run
+    - Primary keys
+    - Add to queues
 '''
 
-CLIENT_ID = '49009eb8904b11a2a5d2c6bdc162dd32'
+CLIENT_ID = 'fDoItMDbsbZz8dY16ZzARCZmzgHBPotA' #'49009eb8904b11a2a5d2c6bdc162dd32'
 
 USAGE = 'Usage: python3 crawler.py <initial_track_url> [-l <traversal_limit>]'
 
@@ -26,25 +28,25 @@ CREATE_USER_TABLE = '''CREATE TABLE IF NOT EXISTS users (
 CREATE_FOLLOWING_TABLE = '''CREATE TABLE IF NOT EXISTS following (
     id integer, following_id integer )'''
 CREATE_COMMENTS_TABLE = '''CREATE TABLE IF NOT EXISTS comments (
-    id integer, target_id integer )'''
+    comment_id integer PRIMARY KEY, id integer, target_id integer )'''
 CREATE_LIKES_TABLE = '''CREATE TABLE IF NOT EXISTS likes (
     id integer, target_id integer )'''
 CREATE_REPOSTS_TABLE = '''CREATE TABLE IF NOT EXISTS reposts (
     id integer, target_id integer )'''
 
 # INSERTIONS
-INSERT_USER = '''INSERT OR REPLACE INTO users VALUES (
-    id=:id, user=:username, url=:permalink_url, avatar_url=:avatar_url,
-    country=:country, city=:city, description=:description,
-    track_count=:track_count, followers_count=:followers_count, followings_count=:followings_count )'''
+INSERT_USER = '''INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?,?,?,?,?)'''
 INSERT_FOLLOWING = '''INSERT INTO following VALUES (?,?)'''
-INSERT_COMMENT = '''INSERT INTO comments VALUES (?,?)'''
+INSERT_COMMENT = '''INSERT INTO comments VALUES (?,?,?)'''
 INSERT_LIKE = '''INSERT INTO likes VALUES (?,?)'''
 INSERT_REPOST = '''INSERT INTO reposts VALUES (?,?)'''
 
 logging.basicConfig(level=logging.WARNING, format='%(message)s')
 
 def main():
+    if len(sys.argv) == 1:
+        with Crawler() as c:
+            c.crawl()
     if len(sys.argv) == 2:
         url = sys.argv[1]
         with Crawler(url) as c:
@@ -56,23 +58,21 @@ def main():
             c.crawl()
 
 class Crawler:
-    def __init__(self, first_user, limit=float('Inf'), db='sc_users.sqlite3'):
-        self.future_users = Queue()
-        self.future_users.put(first_user)
-
+    def __init__(self, first_user=16730, limit=float('Inf'), db='sc_users.sqlite3'):
         self.visited_users_lock = threading.Lock()
-        self.visited_urls = set()
+        self.visited_users = set()
         self.limit = limit
 
         self.user_id_queue = Queue()
+        self.user_id_queue.put(first_user)
         self.user_data_queue = Queue()
 
         self.client = soundcloud.Client(client_id=CLIENT_ID)
 
-        self.setup_db(filename)
+        self.setup_db(db)
 
     def setup_db(self, filename):
-        self.conn = sqlite3.connect(db)
+        self.conn = sqlite3.connect(filename)
         self.conn.execute(CREATE_USER_TABLE)
         self.conn.execute(CREATE_FOLLOWING_TABLE)
         self.conn.execute(CREATE_COMMENTS_TABLE)
@@ -85,52 +85,78 @@ class Crawler:
             user_data = self.user_data_queue.get()
             try:
                 user = user_data['user']
-                self.conn.execute(INSERT_USER, user.fields())
+                user_cols = (
+                    user.id,
+                    user.username,
+                    user.permalink_url,
+                    user.avatar_url,
+                    user.country,
+                    user.city,
+                    user.description,
+                    user.track_count,
+                    user.followers_count,
+                    user.followings_count
+                )
+                self.conn.execute(INSERT_USER, user_cols)
 
                 followings = user_data['followings']
                 self.conn.executemany(INSERT_FOLLOWING, [(user.id, following.id) for following in followings])
 
                 comments = user_data['comments']
-                self.conn.executemany(INSERT_COMMENT, [(user.id, target_id) for target in comment_ids])
+                ids_for_comments = user_data['ids_for_comments']
+                self.conn.executemany(INSERT_COMMENT, [(comment.id, user.id, ids_for_comments[idx]) for idx, comment in enumerate(comments)])
 
                 likes = user_data['likes']
-                self.conn.executemany(INSERT_LIKE, [(user.id, target_id) for target in like_ids])
+                self.conn.executemany(INSERT_LIKE, [(user.id, like.user['id']) for like in likes])
 
                 reposts = user_data['reposts']
                 self.conn.executemany(INSERT_REPOST, [(user.id, repost.track['user']['id']) for repost in reposts])
                 
                 self.conn.commit()
                 logging.warning("[INFO] Saved: {}".format(user.username))
-            except:
-                logging.error("[ERROR] Failed to save: {0}".format(user.username))
+            except Exception as e:
+                logging.error("[ERROR] Failed to save: {} ({})".format(user.username, e))
             self.user_data_queue.task_done()
 
     def scraper(self):
         try:
             user_id = self.user_id_queue.get()
+            with self.visited_users_lock:
+                if user_id in self.visited_users:
+                    self.user_id_queue.task_done()
+                    return
+
             path = '/users/' + str(user_id)
 
-            user = client.get(path)
-            followings = client.get(path + '/followings').collection
-            likes = client.get(path + '/favorites')
-            comments = client.get(path + '/comments')
-            reposts = client.get('/e1' + path + '/track_reposts')
-            #play_count = get_play_count(user_id)
+            user = self.client.get(path)
+            followings = self.client.get(path + '/followings').collection
+            likes = self.client.get(path + '/favorites')
+            comments = self.client.get(path + '/comments')
+            ids_for_comments = []
+            for comment in comments:
+                track = self.client.get('/tracks/' + str(comment.track_id))
+                ids_for_comments.append(track.user['id'])
+            reposts = self.client.get('/e1' + path + '/track_reposts')
+
+            # TODO: total play count for this user's tracks
+
             user_data = {
                 'user': user,
                 'followings': followings,
                 'likes': likes,
                 'comments': comments,
+                'ids_for_comments': ids_for_comments,
                 'reposts': reposts 
             }
             
             self.user_data_queue.put(user_data)
-        except:
-            print('[ERROR] Failed to scrape: {}'.format(user_id))
+            self.user_id_queue.task_done()
+        except Exception as e:
+            print('[ERROR] Failed to scrape: {} ({})'.format(user_id, e))
 
     def crawl(self):
         scraper_threads = []
-        for i in range(20):
+        for i in range(100):
             t = threading.Thread(target=self.scraper)
             scraper_threads.append(t)
             t.start()
