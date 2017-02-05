@@ -91,18 +91,18 @@ class Crawler:
                 self.conn.executemany(INSERT_FOLLOWING, [(user.id, following.id) for following in followings])
 
                 comments = user_data['comments']
-                self.conn.executemany(INSERT_COMMENT, [(user.id, commentee.id) for commentee in comments])
+                self.conn.executemany(INSERT_COMMENT, [(user.id, target_id) for target in comment_ids])
 
                 likes = user_data['likes']
-                self.conn.executemany(INSERT_LIKE, likes)
+                self.conn.executemany(INSERT_LIKE, [(user.id, target_id) for target in like_ids])
 
                 reposts = user_data['reposts']
-                self.conn.executemany(INSERT_REPOST, reposts)
+                self.conn.executemany(INSERT_REPOST, [(user.id, repost.track['user']['id']) for repost in reposts])
                 
                 self.conn.commit()
-                logging.warning("{:1.3f}  {} ({})".format(track.favoritings_count / track.playback_count, track.title, track.permalink_url))
+                logging.warning("[INFO] Saved: {}".format(user.username))
             except:
-                logging.error("Failed to save: {0}".format(track.title))
+                logging.error("[ERROR] Failed to save: {0}".format(user.username))
             self.user_data_queue.task_done()
 
     def scraper(self):
@@ -126,7 +126,7 @@ class Crawler:
             
             self.user_data_queue.put(user_data)
         except:
-            print('Error')
+            print('[ERROR] Failed to scrape: {}'.format(user_id))
 
     def crawl(self):
         scraper_threads = []
