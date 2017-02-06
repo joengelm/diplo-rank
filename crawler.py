@@ -159,9 +159,12 @@ class Crawler:
                 tracks = self.client.get(path + '/tracks')
                 play_count, like_count, comment_count = 0, 0, 0
                 for track in tracks:
-                    play_count += track.playback_count
-                    like_count += track.favoritings_count
-                    comment_count += track.comment_count
+                    if hasattr(track, 'playback_count'):
+                        play_count += track.playback_count
+                    if hasattr(track, 'favoritings_count'):
+                        like_count += track.favoritings_count
+                    if hasattr(track, 'comment_count'):
+                        comment_count += track.comment_count
 
                 user_data = {
                     'user': user,
