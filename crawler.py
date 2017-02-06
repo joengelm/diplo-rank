@@ -122,7 +122,7 @@ class Crawler:
                 logging.error("[ERROR] Failed to save \"{}\" ({})".format(user.username, e))
             self.user_data_queue.task_done()
 
-    def get_collection(path):
+    def get_collection(self, path):
         resource = self.client.get(path, linked_partitioning=1)
         collection = resource.collection
 
