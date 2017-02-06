@@ -122,6 +122,18 @@ class Crawler:
                 logging.error("[ERROR] Failed to save \"{}\" ({})".format(user.username, e))
             self.user_data_queue.task_done()
 
+    def get_collection(path):
+        resource = self.client.get(path, linked_partitioning=1)
+        collection = resource.collection
+
+        while hasattr(resource, 'next_href'):
+            resource = self.client.get(resource.next_href)
+            collection += resource.collection
+            if hasattr(resource, 'next_href') and resource.next_href == None:
+                break
+
+        return collection
+
     def scraper(self):
         while True:
             try:
@@ -135,9 +147,9 @@ class Crawler:
                 path = '/users/' + str(user_id)
 
                 user = self.client.get(path)
-                followings = self.client.get(path + '/followings').collection
-                likes = self.client.get(path + '/favorites')
-                comments = self.client.get(path + '/comments')
+                followings = self.get_collection(path + '/followings')
+                likes = self.get_collection(path + '/favorites')
+                comments = self.get_collection(path + '/comments')
                 ids_for_comments = []
                 for comment in comments:
                     track = self.client.get('/tracks/' + str(comment.track_id))
