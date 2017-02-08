@@ -10,6 +10,10 @@ from urllib.request import urlopen
 
 '''
 TODO:
+    - Fix issue where reposts aren't being added to DB
+    - Fix "too many open files error" (decrease thread count further?)
+    - Fix "get user ID" request failures
+    - Fix "max retries" failures
     - Signal handling for a cleaner way to stop crawling
     - Pick up crawling from a previous run
 '''
