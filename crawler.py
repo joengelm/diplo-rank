@@ -16,7 +16,7 @@ TODO:
 
 CLIENT_ID = 'fDoItMDbsbZz8dY16ZzARCZmzgHBPotA' #'49009eb8904b11a2a5d2c6bdc162dd32'
 
-USAGE = 'Usage: python3 crawler.py <initial_track_url> [-l <traversal_limit>]'
+USAGE = 'Usage: python3 crawler.py [-i <initial_user_id>]\n\t-i\tThe user ID to begin the crawl with. Defaults to Diplo (16730).'
 
 # TABLE CREATION
 CREATE_USER_TABLE = '''CREATE TABLE IF NOT EXISTS users (
@@ -35,10 +35,10 @@ CREATE_REPOSTS_TABLE = '''CREATE TABLE IF NOT EXISTS reposts (
 
 # INSERTIONS
 INSERT_USER = '''INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'''
-INSERT_FOLLOWING = '''INSERT INTO following VALUES (?,?,?)'''
-INSERT_COMMENT = '''INSERT INTO comments VALUES (?,?,?)'''
-INSERT_LIKE = '''INSERT INTO likes VALUES (?,?,?)'''
-INSERT_REPOST = '''INSERT INTO reposts VALUES (?,?,?)'''
+INSERT_FOLLOWING = '''INSERT OR REPLACE INTO following VALUES (?,?,?)'''
+INSERT_COMMENT = '''INSERT OR REPLACE INTO comments VALUES (?,?,?)'''
+INSERT_LIKE = '''INSERT OR REPLACE INTO likes VALUES (?,?,?)'''
+INSERT_REPOST = '''INSERT OR REPLACE INTO reposts VALUES (?,?,?)'''
 
 logging.basicConfig(level=logging.WARNING, format='%(message)s')
 
@@ -46,21 +46,17 @@ def main():
     if len(sys.argv) == 1:
         with Crawler() as c:
             c.crawl()
-    if len(sys.argv) == 2:
+    elif len(sys.argv) == 2:
         url = sys.argv[1]
         with Crawler(url) as c:
             c.crawl()
-    elif len(sys.argv) == 4:
-        url = sys.argv[1]
-        limit = int(sys.argv[3])
-        with Crawler(url, limit=limit) as c:
-            c.crawl()
+    else:
+        print(USAGE)
 
 class Crawler:
-    def __init__(self, first_user=16730, limit=float('Inf'), db='sc_graph.sqlite3'):
+    def __init__(self, first_user=16730, db='sc_graph.sqlite3'):
         self.visited_users_lock = threading.Lock()
         self.visited_users = set()
-        self.limit = limit
 
         self.user_id_queue = Queue()
         self.user_id_queue.put(first_user)
@@ -123,14 +119,12 @@ class Crawler:
             self.user_data_queue.task_done()
 
     def get_collection(self, path):
-        resource = self.client.get(path, linked_partitioning=1)
+        resource = self.client.get(path, limit=200, linked_partitioning=1)
         collection = resource.collection
 
-        while hasattr(resource, 'next_href'):
+        while hasattr(resource, 'next_href') and resource.next_href:
             resource = self.client.get(resource.next_href)
             collection += resource.collection
-            if hasattr(resource, 'next_href') and resource.next_href == None:
-                break
 
         return collection
 
@@ -146,7 +140,15 @@ class Crawler:
 
                 path = '/users/' + str(user_id)
 
-                user = self.client.get(path)
+                try:
+                    user = self.client.get(path)
+                except: # TODO (joe): there's probably a better way to do this
+                    try:
+                        user = self.client.get(path)
+                    except:
+                        logging.error("Failed to get user ID: {}".format(user_id))
+                        continue
+
                 followings = self.get_collection(path + '/followings')
                 likes = self.get_collection(path + '/favorites')
                 comments = self.get_collection(path + '/comments')
@@ -193,7 +195,7 @@ class Crawler:
 
     def crawl(self):
         scraper_threads = []
-        for i in range(500):
+        for i in range(200):
             t = threading.Thread(target=self.scraper)
             scraper_threads.append(t)
             t.start()
