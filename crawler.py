@@ -138,7 +138,6 @@ class Crawler:
             next_href = response['next_href'] + '&client_id=' + CLIENT_ID
             response = json.loads(urllib2.urlopen(next_href).read())
             collection += response['collection']
-            print(collection)
 
         return collection
 
