@@ -6,7 +6,8 @@ import soundcloud
 import sqlite3
 import sys
 import threading
-from urllib.request import urlopen
+import urllib2
+import json
 
 '''
 TODO:
@@ -66,8 +67,6 @@ class Crawler:
         self.user_id_queue.put(first_user)
         self.user_data_queue = Queue()
 
-        self.client = soundcloud.Client(client_id=CLIENT_ID)
-
         self.setup_db(db)
 
     def setup_db(self, filename):
@@ -122,15 +121,40 @@ class Crawler:
                 logging.error("[ERROR] Failed to save \"{}\" ({})".format(user.username, e))
             self.user_data_queue.task_done()
 
-    def get_collection(self, path):
-        resource = self.client.get(path, limit=200, linked_partitioning=1)
-        collection = resource.collection
+    def get_collection(self, user_id, resource_name):
+        url = 'https://api-v2.soundcloud.com/'
+        if resource_name == 'reposts': # reposts need '/stream' in the url
+            url += 'stream/'
+        url += ('users/'
+            + str(user_id)
+            + '/' + resource_name
+            + '?client_id=' + CLIENT_ID
+            + '&limit=200&linked_partitioning=1')
 
-        while hasattr(resource, 'next_href') and resource.next_href:
-            resource = self.client.get(resource.next_href)
-            collection += resource.collection
+        response = json.loads(urllib2.urlopen(url).read())
+        collection = response['collection']
+
+        while 'next_href' in response and response['next_href']:
+            next_href = response['next_href'] + '&client_id=' + CLIENT_ID
+            response = json.loads(urllib2.urlopen(next_href).read())
+            collection += response['collection']
+            print(collection)
 
         return collection
+
+    def get_user(self, user_id):
+        url = ('https://api-v2.soundcloud.com/stream/users/' + str(user_id)
+            + '?client_id=' + CLIENT_ID)
+
+        response = json.loads(urllib2.urlopen(url).read())
+        collection = response['collection'] # strangely, getting a user returns a collection
+        return collection[0]['user']
+
+    def get_track(self, track_id):
+        url = ('https://api-v2.soundcloud.com/tracks/' + str(track_id)
+            + '?client_id=' + CLIENT_ID)
+        response = json.loads(urllib2.urlopen(url).read())
+        return response
 
     def scraper(self):
         while True:
@@ -142,27 +166,18 @@ class Crawler:
                         return
                     self.visited_users.add(user_id)
 
-                path = '/users/' + str(user_id)
+                user = self.get_user(user_id)
 
-                try:
-                    user = self.client.get(path)
-                except: # TODO (joe): there's probably a better way to do this
-                    try:
-                        user = self.client.get(path)
-                    except:
-                        logging.error("Failed to get user ID: {}".format(user_id))
-                        continue
-
-                followings = self.get_collection(path + '/followings')
-                likes = self.get_collection(path + '/favorites')
-                comments = self.get_collection(path + '/comments')
+                followings = self.get_collection(user_id, 'followings')
+                likes = self.get_collection(user_id, 'likes')
+                comments = self.get_collection(user_id, 'comments')
                 ids_for_comments = []
                 for comment in comments:
-                    track = self.client.get('/tracks/' + str(comment.track_id))
+                    track = self.get_track(comment.track_id)
                     ids_for_comments.append(track.user['id'])
-                reposts = self.client.get('/e1' + path + '/track_reposts')
+                reposts = self.get_collection(user_id, 'reposts')
 
-                tracks = self.client.get(path + '/tracks')
+                tracks = self.get_collection(user_id, 'tracks')
                 play_count, like_count, comment_count = 0, 0, 0
                 for track in tracks:
                     if hasattr(track, 'playback_count'):
@@ -189,7 +204,7 @@ class Crawler:
                 for following in followings:
                     self.user_id_queue.put(following.id)
 
-                followers = self.client.get(path + '/followers').collection
+                followers = self.get_collection(user_id, 'followers')
                 for follower in followers:
                     self.user_id_queue.put(follower.id)
 
