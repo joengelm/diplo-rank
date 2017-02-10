@@ -6,7 +6,7 @@ import soundcloud
 import sqlite3
 import sys
 import threading
-import urllib2
+from urllib.request import urlopen
 import json
 
 '''
@@ -26,8 +26,7 @@ USAGE = 'Usage: python3 crawler.py [-i <initial_user_id>]\n\t-i\tThe user ID to 
 # TABLE CREATION
 CREATE_USER_TABLE = '''CREATE TABLE IF NOT EXISTS users (
     id integer PRIMARY KEY, username text, url text, avatar_url text, 
-    country text, city text, description text, 
-    track_count integer, followers_count integer, followings_count integer,
+    country text, city text,
     total_play_count integer, total_like_count integer, total_comment_count integer )'''
 CREATE_FOLLOWING_TABLE = '''CREATE TABLE IF NOT EXISTS following (
     unique_id text PRIMARY KEY, id integer, following_id integer )'''
@@ -39,7 +38,7 @@ CREATE_REPOSTS_TABLE = '''CREATE TABLE IF NOT EXISTS reposts (
     unique_id text PRIMARY KEY, id integer, target_id integer )'''
 
 # INSERTIONS
-INSERT_USER = '''INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'''
+INSERT_USER = '''INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?,?,?,?)'''
 INSERT_FOLLOWING = '''INSERT OR REPLACE INTO following VALUES (?,?,?)'''
 INSERT_COMMENT = '''INSERT OR REPLACE INTO comments VALUES (?,?,?)'''
 INSERT_LIKE = '''INSERT OR REPLACE INTO likes VALUES (?,?,?)'''
@@ -86,16 +85,12 @@ class Crawler:
             try:
                 user = user_data['user']
                 user_cols = (
-                    user.id,
-                    user.username,
-                    user.permalink_url,
-                    user.avatar_url,
-                    user.country,
-                    user.city,
-                    user.description,
-                    user.track_count,
-                    user.followers_count,
-                    user.followings_count,
+                    user['id'],
+                    user['username'],
+                    user['permalink_url'],
+                    user['avatar_url'],
+                    user['country_code'],
+                    user['city'],
                     user_data['total_play_count'],
                     user_data['total_like_count'],
                     user_data['total_comment_count']
@@ -103,22 +98,22 @@ class Crawler:
                 self.conn.execute(INSERT_USER, user_cols)
 
                 followings = user_data['followings']
-                self.conn.executemany(INSERT_FOLLOWING, [(str(user.id) + '-' + str(following.id), user.id, following.id) for following in followings])
+                self.conn.executemany(INSERT_FOLLOWING, [(str(user['id']) + '-' + str(following['id']), user['id'], following['id']) for following in followings])
 
                 comments = user_data['comments']
                 ids_for_comments = user_data['ids_for_comments']
-                self.conn.executemany(INSERT_COMMENT, [(comment.id, user.id, ids_for_comments[idx]) for idx, comment in enumerate(comments)])
+                self.conn.executemany(INSERT_COMMENT, [(comment['self']['urn'].split(':')[-1], user['id'], ids_for_comments[idx]) for idx, comment in enumerate(comments)])
 
                 likes = user_data['likes']
-                self.conn.executemany(INSERT_LIKE, [(str(user.id) + '-' + str(like.id), user.id, like.user['id']) for like in likes])
+                self.conn.executemany(INSERT_LIKE, [(str(user['id']) + '-' + str(like['track']['id']), user['id'], like['track']['user']['id']) for like in likes])
 
                 reposts = user_data['reposts']
-                self.conn.executemany(INSERT_REPOST, [(str(user.id) + '-' + str(repost.track['id']), user.id, repost.track['user']['id']) for repost in reposts])
+                self.conn.executemany(INSERT_REPOST, [(str(user['id']) + '-' + str(repost['track']['id']), user['id'], repost['track']['user']['id']) for repost in reposts])
                 
                 self.conn.commit()
-                logging.warning("[INFO] Saved \"{}\"".format(user.username))
+                logging.warning("[INFO] Saved \"{}\"".format(user['username']))
             except Exception as e:
-                logging.error("[ERROR] Failed to save \"{}\" ({})".format(user.username, e))
+                logging.error("[ERROR] Failed to save \"{}\" ({})".format(user['username'], e))
             self.user_data_queue.task_done()
 
     def get_collection(self, user_id, resource_name):
@@ -131,12 +126,12 @@ class Crawler:
             + '?client_id=' + CLIENT_ID
             + '&limit=200&linked_partitioning=1')
 
-        response = json.loads(urllib2.urlopen(url).read())
+        response = json.loads(urlopen(url).read().decode('utf-8'))
         collection = response['collection']
 
         while 'next_href' in response and response['next_href']:
             next_href = response['next_href'] + '&client_id=' + CLIENT_ID
-            response = json.loads(urllib2.urlopen(next_href).read())
+            response = json.loads(urlopen(next_href).read().decode('utf-8'))
             collection += response['collection']
 
         return collection
@@ -145,19 +140,20 @@ class Crawler:
         url = ('https://api-v2.soundcloud.com/stream/users/' + str(user_id)
             + '?client_id=' + CLIENT_ID)
 
-        response = json.loads(urllib2.urlopen(url).read())
+        response = json.loads(urlopen(url).read().decode('utf-8'))
         collection = response['collection'] # strangely, getting a user returns a collection
         return collection[0]['user']
 
     def get_track(self, track_id):
         url = ('https://api-v2.soundcloud.com/tracks/' + str(track_id)
             + '?client_id=' + CLIENT_ID)
-        response = json.loads(urllib2.urlopen(url).read())
+        response = json.loads(urlopen(url).read().decode('utf-8'))
         return response
 
     def scraper(self):
         while True:
             try:
+                user = {'username': 'Unknown'}
                 user_id = self.user_id_queue.get()
                 with self.visited_users_lock:
                     if user_id in self.visited_users:
@@ -168,23 +164,40 @@ class Crawler:
                 user = self.get_user(user_id)
 
                 followings = self.get_collection(user_id, 'followings')
+
                 likes = self.get_collection(user_id, 'likes')
+                track_likes = []
+                for l in likes:
+                    if 'track' in l:    # some likes are playlists (ignore these for now)
+                        track_likes.append(l)
+                likes = track_likes
+
                 comments = self.get_collection(user_id, 'comments')
                 ids_for_comments = []
                 for comment in comments:
-                    track = self.get_track(comment.track_id)
-                    ids_for_comments.append(track.user['id'])
+                    try:
+                        track = self.get_track(comment['track'].split(':')[-1])
+                        ids_for_comments.append(track['user']['id'])
+                    except Exception as e:
+                        ids_for_comments.append(0)
+                        logging.info('Failed to scrape comment {} for user {}, continuing...'.format(comment['self']['urn'], user['username']))
+                
                 reposts = self.get_collection(user_id, 'reposts')
+                track_reposts = []
+                for r in reposts:
+                    if 'track' in r:    # some reposts are playlists (ignore these for now)
+                        track_reposts.append(r)
+                reposts = track_reposts
 
                 tracks = self.get_collection(user_id, 'tracks')
                 play_count, like_count, comment_count = 0, 0, 0
                 for track in tracks:
-                    if hasattr(track, 'playback_count'):
-                        play_count += track.playback_count
-                    if hasattr(track, 'favoritings_count'):
-                        like_count += track.favoritings_count
-                    if hasattr(track, 'comment_count'):
-                        comment_count += track.comment_count
+                    if 'playback_count' in track:
+                        play_count += track['playback_count'] if track['playback_count'] else 0
+                    if 'likes_count' in track:
+                        like_count += track['likes_count'] if track['likes_count'] else 0
+                    if 'comment_count' in track:
+                        comment_count += track['comment_count'] if track['comment_count'] else 0
 
                 user_data = {
                     'user': user,
@@ -201,15 +214,15 @@ class Crawler:
                 self.user_data_queue.put(user_data)
 
                 for following in followings:
-                    self.user_id_queue.put(following.id)
+                    self.user_id_queue.put(following['id'])
 
                 followers = self.get_collection(user_id, 'followers')
                 for follower in followers:
-                    self.user_id_queue.put(follower.id)
+                    self.user_id_queue.put(follower['id'])
 
                 self.user_id_queue.task_done()
             except Exception as e:
-                print('[ERROR] Failed to scrape \"{}\" ({}) because: {}'.format(user.username if user else 'Unknown', user_id, e))
+                logging.error('[ERROR] Failed to scrape \"{}\" ({}) because: {}'.format(user['username'], user_id, e))
 
     def crawl(self):
         scraper_threads = []
