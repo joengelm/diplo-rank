@@ -12,9 +12,7 @@ import json
 '''
 TODO:
     - Fix issue where reposts aren't being added to DB
-    - Fix "too many open files error" (decrease thread count further?)
-    - Fix "get user ID" request failures
-    - Fix "max retries" failures
+    - Fix "connection reset by peer" error
     - Signal handling for a cleaner way to stop crawling
     - Pick up crawling from a previous run
 '''
@@ -89,7 +87,7 @@ class Crawler:
                     user['username'],
                     user['permalink_url'],
                     user['avatar_url'],
-                    user['country_code'],
+                    user['country'] if 'country' in user else user['country_code'],
                     user['city'],
                     user_data['total_play_count'],
                     user_data['total_like_count'],
@@ -137,12 +135,10 @@ class Crawler:
         return collection
 
     def get_user(self, user_id):
-        url = ('https://api-v2.soundcloud.com/stream/users/' + str(user_id)
+        url = ('https://api.soundcloud.com/users/' + str(user_id)
             + '?client_id=' + CLIENT_ID)
-
         response = json.loads(urlopen(url).read().decode('utf-8'))
-        collection = response['collection'] # strangely, getting a user returns a collection
-        return collection[0]['user']
+        return response
 
     def get_track(self, track_id):
         url = ('https://api-v2.soundcloud.com/tracks/' + str(track_id)
