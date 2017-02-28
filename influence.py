@@ -1,7 +1,8 @@
-from collections import defaultdict
-import pagerank
+from collections import Counter
 import sqlite3
 import sys
+import networkx as nx
+import operator
 
 USAGE = 'Usage: python3 influence.py [--db <db_name>]'
 
@@ -12,37 +13,36 @@ def main():
     elif len(sys.argv) > 3 or len(sys.argv) == 2:
         print(USAGE)
 
-    G = build_graph_from_db(db)
+    print('Building graph...')
+    G, user_ids_to_urls = build_graph_from_db(db)
     print('Finished building graph. Ranking...')
-    ranking = pagerank.rank(G)
+    ranking = nx.pagerank(G)
+    print('Done ranking.')
 
-    for user, rank in ranking.iteritems():
-        print("{}: {}".format(user, rank))
+    sorted_ranking = sorted(ranking.items(), key=operator.itemgetter(1))
+
+    for user_id, rank in sorted_ranking:
+        user = str(user_id)
+        print("{}: {}".format(user_ids_to_urls[user] if user in user_ids_to_urls else user, rank))
+
 
 def build_graph_from_db(db):
-    # TODO: Build a nested dictionary where each key (user) maps to a dict of where 
-    #   keys are target users and values are weights
     conn = sqlite3.connect(db)
+    G = nx.DiGraph()
 
-    graph = defaultdict(lambda : defaultdict(int))
+    user_ids_to_urls = {str(user[0]): str(user[1]) for user in conn.execute('SELECT id, url FROM users')}
 
-    user_ids = [str(user_id[0]) for user_id in conn.execute('SELECT id FROM users')]
-
-    for user_id in user_ids:
+    for user_id, _ in user_ids_to_urls.items():
         following = [following_id[0] for following_id in conn.execute('SELECT following_id FROM following WHERE id = ?', (user_id,))]
         commented_on = [target_id[0] for target_id in conn.execute('SELECT target_id FROM comments WHERE id = ?', (user_id,))]
         likes = [target_id[0] for target_id in conn.execute('SELECT target_id FROM likes WHERE id = ?', (user_id,))]
         reposted = [target_id[0] for target_id in conn.execute('SELECT target_id FROM reposts WHERE id = ?', (user_id,))]
 
-        combined = following + commented_on + likes + reposted
-        for target in combined:
-            graph[user_id][target] += 1
+        combined = Counter(following + commented_on + likes + reposted)
+        for target, weight in combined.items():
+            G.add_edge(user_id, target, weight=weight)
 
-        print('{} has {} outgoing edges'.format(user_id, len(graph[user_id])))
-
-    # Example graph: {'diplo': {'lil uzi vert': 2, 'major lazer': 16}, 'lil uzi vert': {'diplo': 5}}
-    return graph
+    return G, user_ids_to_urls
 
 if __name__ == '__main__':
     main()
-    G = build_graph_from_db()
