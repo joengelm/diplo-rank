@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 import logging
 import os
+import time
 from queue import Queue
 import soundcloud
 import sqlite3
@@ -107,7 +108,7 @@ class Crawler:
 
                 reposts = user_data['reposts']
                 self.conn.executemany(INSERT_REPOST, [(str(user['id']) + '-' + str(repost['track']['id']), user['id'], repost['track']['user']['id']) for repost in reposts])
-                
+
                 self.conn.commit()
                 logging.warning("[INFO] Saved \"{}\"".format(user['username']))
             except Exception as e:
@@ -146,28 +147,37 @@ class Crawler:
         response = json.loads(urlopen(url).read().decode('utf-8'))
         return response
 
-    def scraper(self):
+    def scraper(self, id=-1):
         while True:
             try:
+                start = time.time()
                 user = {'username': 'Unknown'}
                 user_id = self.user_id_queue.get()
+                logging.warning('[INFO] Queue has grown to length: {}'.format(self.user_id_queue.qsize()))
                 with self.visited_users_lock:
                     if user_id in self.visited_users:
                         self.user_id_queue.task_done()
-                        return
+                        continue
                     self.visited_users.add(user_id)
 
+                user_start = time.time()
                 user = self.get_user(user_id)
+                user_time = time.time() - user_start
 
+                followings_start = time.time()
                 followings = self.get_collection(user_id, 'followings')
+                followings_time = time.time() - followings_start
 
+                likes_start = time.time()
                 likes = self.get_collection(user_id, 'likes')
                 track_likes = []
                 for l in likes:
                     if 'track' in l:    # some likes are playlists (ignore these for now)
                         track_likes.append(l)
                 likes = track_likes
+                likes_time = time.time() - likes_start
 
+                comments_start = time.time()
                 comments = self.get_collection(user_id, 'comments')
                 ids_for_comments = []
                 for comment in comments:
@@ -177,14 +187,18 @@ class Crawler:
                     except Exception as e:
                         ids_for_comments.append(0)
                         logging.info('Failed to scrape comment {} for user {}, continuing...'.format(comment['self']['urn'], user['username']))
+                comments_time = time.time() - comments_start
                 
+                reposts_start = time.time()
                 reposts = self.get_collection(user_id, 'reposts')
                 track_reposts = []
                 for r in reposts:
                     if 'track' in r:    # some reposts are playlists (ignore these for now)
                         track_reposts.append(r)
                 reposts = track_reposts
+                reposts_time = time.time() - reposts_start
 
+                tracks_start = time.time()
                 tracks = self.get_collection(user_id, 'tracks')
                 play_count, like_count, comment_count = 0, 0, 0
                 for track in tracks:
@@ -194,6 +208,7 @@ class Crawler:
                         like_count += track['likes_count'] if track['likes_count'] else 0
                     if 'comment_count' in track:
                         comment_count += track['comment_count'] if track['comment_count'] else 0
+                tracks_time = time.time() - tracks_start
 
                 user_data = {
                     'user': user,
@@ -212,18 +227,23 @@ class Crawler:
                 for following in followings:
                     self.user_id_queue.put(following['id'])
 
+                followers_start = time.time()
                 followers = self.get_collection(user_id, 'followers')
                 for follower in followers:
                     self.user_id_queue.put(follower['id'])
+                followers_time = time.time() - followers_start
+
+                total_time = time.time() - start
+                logging.warning('[INFO] Thread {} scraped {} ({}) in {:.2f}s\n\tUser info in {:.2f}s\n\t{} followings in {:.2f}s\n\t{} likes {:.2f}s\n\t{} comments: {:.2f}s\n\t{} reposts in {:.2f}s\n\t{} tracks in {:.2f}s\n\t{} followers in {:.2f}s'.format(id, user['username'], user_id, total_time, user_time, len(followings), followings_time, len(likes), likes_time, len(comments), comments_time, len(reposts), reposts_time, len(tracks), tracks_time, len(followers), followers_time))
 
                 self.user_id_queue.task_done()
             except Exception as e:
-                logging.error('[ERROR] Failed to scrape \"{}\" ({}) because: {}'.format(user['username'], user_id, e))
+                logging.error('[ERROR] Failed to scrape {} ({}) due to error: {}'.format(user['username'], user_id, e))
 
     def crawl(self):
         scraper_threads = []
-        for i in range(200):
-            t = threading.Thread(target=self.scraper)
+        for i in range(10):
+            t = threading.Thread(target=self.scraper, args=(i,))
             scraper_threads.append(t)
             t.start()
 
