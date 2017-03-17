@@ -21,7 +21,7 @@ def main():
 
     sorted_ranking = sorted(ranking.items(), key=operator.itemgetter(1))
 
-    for user_id, rank in sorted_ranking:
+    for user_id, rank in sorted_ranking[-100:]:
         user = str(user_id)
         print("{}: {}".format(user_ids_to_urls[user] if user in user_ids_to_urls else user, rank))
 

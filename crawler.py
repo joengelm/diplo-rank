@@ -18,7 +18,7 @@ TODO:
     - Pick up crawling from a previous run
 '''
 
-CLIENT_ID = 'fDoItMDbsbZz8dY16ZzARCZmzgHBPotA' #'49009eb8904b11a2a5d2c6bdc162dd32'
+CLIENT_ID = '2t9loNQH90kzJcsFCODdigxfp325aq4z' #'fDoItMDbsbZz8dY16ZzARCZmzgHBPotA' #'49009eb8904b11a2a5d2c6bdc162dd32'
 
 USAGE = 'Usage: python3 crawler.py [-i <initial_user_id>]\n\t-i\tThe user ID to begin the crawl with. Defaults to Diplo (16730).'
 
@@ -115,7 +115,7 @@ class Crawler:
                 logging.error("[ERROR] Failed to save \"{}\" ({})".format(user['username'], e))
             self.user_data_queue.task_done()
 
-    def get_collection(self, user_id, resource_name):
+    def get_collection(self, user_id, resource_name, max_pages=100000000):    # maximum = 200 * 100mil = 20bil objects
         url = 'https://api-v2.soundcloud.com/'
         if resource_name == 'reposts': # reposts need '/stream' in the url
             url += 'stream/'
@@ -127,11 +127,13 @@ class Crawler:
 
         response = json.loads(urlopen(url).read().decode('utf-8'))
         collection = response['collection']
+        max_pages -= 1
 
-        while 'next_href' in response and response['next_href']:
+        while 'next_href' in response and response['next_href'] and max_pages > 0:
             next_href = response['next_href'] + '&client_id=' + CLIENT_ID
             response = json.loads(urlopen(next_href).read().decode('utf-8'))
             collection += response['collection']
+            max_pages -= 1
 
         return collection
 
@@ -146,6 +148,22 @@ class Crawler:
             + '?client_id=' + CLIENT_ID)
         response = json.loads(urlopen(url).read().decode('utf-8'))
         return response
+
+    def get_user_ids_for_tracks(self, track_ids):
+        url = ('https://api-v2.soundcloud.com/tracks?ids=' + ','.join(track_ids)
+            + '&client_id=' + CLIENT_ID)
+        response = json.loads(urlopen(url).read().decode('utf-8'))
+        user_ids = []
+        for track_id in track_ids:
+            found = False
+            for r in response:
+                if r['id'] == int(track_id):
+                    user_ids.append(r['user_id'])
+                    found = True
+                    break
+            if not found:
+                user_ids.append(0)
+        return user_ids
 
     def scraper(self, id=-1):
         while True:
@@ -180,13 +198,16 @@ class Crawler:
                 comments_start = time.time()
                 comments = self.get_collection(user_id, 'comments')
                 ids_for_comments = []
-                for comment in comments:
-                    try:
-                        track = self.get_track(comment['track'].split(':')[-1])
-                        ids_for_comments.append(track['user']['id'])
-                    except Exception as e:
-                        ids_for_comments.append(0)
-                        logging.info('Failed to scrape comment {} for user {}, continuing...'.format(comment['self']['urn'], user['username']))
+                try:
+                    track_ids = [comment['track'].split(':')[-1] for comment in comments]
+                    ids_for_comments = [user for user in self.get_user_ids_for_tracks(track_ids)]
+                except Exception as e:
+                    logging.info('Failed to scrape comments for user {}, continuing...'.format(user['username']))
+
+                if len(ids_for_comments) > 0:
+                    ids_for_comments, comments = zip(*[(i, comment) for (i, comment) in zip(ids_for_comments, comments) if i != 0])
+                else:
+                    ids_for_comments, comments = [], []
                 comments_time = time.time() - comments_start
                 
                 reposts_start = time.time()
@@ -225,12 +246,16 @@ class Crawler:
                 self.user_data_queue.put(user_data)
 
                 for following in followings:
-                    self.user_id_queue.put(following['id'])
+                    with self.visited_users_lock:
+                        if following['id'] not in self.visited_users:
+                            self.user_id_queue.put(following['id'])
 
                 followers_start = time.time()
-                followers = self.get_collection(user_id, 'followers')
+                followers = self.get_collection(user_id, 'followers', max_pages=5)  # Get 1000 followers at most
                 for follower in followers:
-                    self.user_id_queue.put(follower['id'])
+                    with self.visited_users_lock:
+                        if follower['id'] not in self.visited_users:
+                            self.user_id_queue.put(follower['id'])
                 followers_time = time.time() - followers_start
 
                 total_time = time.time() - start
